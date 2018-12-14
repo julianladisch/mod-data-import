@@ -381,4 +381,15 @@ public class RestVerticleTest {
       .statusCode(HttpStatus.SC_NOT_FOUND)
       .log().all();
   }
+
+  @Test
+  public void setUploadDefinitionDeleteNotFound() {
+    RestAssured.given()
+      .spec(spec)
+      .when()
+      .delete(DEFINITION_PATH + "/" + UUID.randomUUID().toString())
+      .then()
+      .statusCode(HttpStatus.SC_NOT_FOUND)
+      .log().all();
+  }
 }

@@ -57,6 +57,15 @@
         },
         {
           "methods": [
+            "DELETE"
+          ],
+          "pathPattern": "/data-import/upload/definition/{uploadDefinitionId}",
+          "permissionsRequired": [
+            "data-import.upload.definition.delete"
+          ]
+        },
+        {
+          "methods": [
             "POST"
           ],
           "pathPattern": "/data-import/upload/file",
@@ -132,6 +141,11 @@
       "description": "Put Upload Definition"
     },
     {
+      "permissionName": "data-import.upload.definition.delete",
+      "displayName": "Data Import - delete upload definition",
+      "description": "Delete Upload Definition"
+    },
+    {
       "permissionName": "data-import.upload.file.post",
       "displayName": "Data Import - upload file into the storage",
       "description": "Upload file"
@@ -155,6 +169,7 @@
         "data-import.upload.definition.post",
         "data-import.upload.definition.get",
         "data-import.upload.definition.put",
+        "data-import.upload.definition.delete",
         "data-import.upload.definition.file.delete",
         "data-import.upload.definition.file.post"
       ],

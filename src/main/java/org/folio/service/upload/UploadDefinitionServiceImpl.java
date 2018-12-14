@@ -1,5 +1,6 @@
 package org.folio.service.upload;
 
+import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.http.HttpMethod;
@@ -16,6 +17,7 @@ import org.folio.util.OkapiConnectionParams;
 import org.folio.util.RestUtil;
 
 import javax.ws.rs.BadRequestException;
+import javax.ws.rs.InternalServerErrorException;
 import javax.ws.rs.NotFoundException;
 import java.util.ArrayList;
 import java.util.Date;
@@ -25,11 +27,11 @@ import java.util.UUID;
 
 import static org.folio.util.RestUtil.CREATED_STATUS_CODE;
 
-
 public class UploadDefinitionServiceImpl implements UploadDefinitionService {
 
-  private static final String JOB_EXECUTION_CREATE_URL = "/change-manager/jobExecutions";
   private static final Logger logger = LoggerFactory.getLogger(UploadDefinitionServiceImpl.class);
+  private static final String JOB_EXECUTION_CREATE_URL = "/change-manager/jobExecutions";
+  private static final String JOB_EXECUTION_GET_URL = "/change-manager/jobExecution/";
 
   private Vertx vertx;
   private UploadDefinitionDao uploadDefinitionDao;
@@ -84,8 +86,14 @@ public class UploadDefinitionServiceImpl implements UploadDefinitionService {
   }
 
   @Override
-  public Future<Boolean> deleteUploadDefinition(String id) {
-    return uploadDefinitionDao.deleteUploadDefinition(id);
+  public Future<Boolean> deleteUploadDefinition(String id, OkapiConnectionParams params) {
+    Future<Boolean> future = Future.future();
+    return getUploadDefinitionById(id)
+      .compose(optionalUploadDefinition -> optionalUploadDefinition
+        .map(uploadDefinition -> uploadDefinitionDao.deleteUploadDefinition(id))
+        .orElse(Future.failedFuture(new NotFoundException(
+          String.format("UploadDefinition with id '%s' was not found", id))))
+      );
   }
 
   @Override
@@ -108,6 +116,7 @@ public class UploadDefinitionServiceImpl implements UploadDefinitionService {
       files.add(new JsonObject().put("name", fileDefinition.getName()));
     }
     request.put("files", files);
+    request.put("userId", definition.getMetadata().getCreatedByUserId());
     RestUtil.doRequest(params, JOB_EXECUTION_CREATE_URL, HttpMethod.POST, request.encode())
       .setHandler(responseResult -> {
         try {
@@ -168,5 +177,39 @@ public class UploadDefinitionServiceImpl implements UploadDefinitionService {
     }
     future.complete(definition);
     return future;
+  }
+
+  /**
+   * Validate http response and fail future if necessary
+   *
+   * @param asyncResult - http response callback
+   * @param future      - future of callback
+   * @return - boolean value is response ok
+   */
+  private boolean isValidAsyncResult(AsyncResult<RestUtil.WrappedResponse> asyncResult, Future future) {
+    String errorMessage = "Error during HTTP request to source-record-manager";
+    String httpErrorMessage = "Response code is not 200. Received code: ";
+    if (asyncResult.failed()) {
+      logger.error(errorMessage, asyncResult.cause());
+      future.fail(asyncResult.cause());
+      return false;
+    } else if (asyncResult.result() == null) {
+      logger.error(errorMessage);
+      future.fail(new BadRequestException());
+      return false;
+    } else if (asyncResult.result().getCode() == 404) {
+      logger.error(httpErrorMessage + asyncResult.result().getCode());
+      future.fail(new NotFoundException());
+      return false;
+    } else if (asyncResult.result().getCode() == 500) {
+      logger.error(httpErrorMessage + asyncResult.result().getCode());
+      future.fail(new InternalServerErrorException());
+      return false;
+    } else if (asyncResult.result().getCode() == 200 || asyncResult.result().getCode() == 201) {
+      return true;
+    }
+    logger.error(httpErrorMessage + asyncResult.result().getCode());
+    future.fail(new BadRequestException());
+    return false;
   }
 }

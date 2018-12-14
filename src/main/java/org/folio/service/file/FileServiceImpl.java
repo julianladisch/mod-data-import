@@ -2,6 +2,8 @@ package org.folio.service.file;
 
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
+import io.vertx.core.logging.Logger;
+import io.vertx.core.logging.LoggerFactory;
 import org.folio.rest.jaxrs.model.FileDefinition;
 import org.folio.rest.jaxrs.model.UploadDefinition;
 import org.folio.service.storage.FileStorageServiceBuilder;
@@ -15,8 +17,10 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
-
 public class FileServiceImpl implements FileService {
+
+  private static final Logger logger = LoggerFactory.getLogger(FileServiceImpl.class);
+  private static final String JOB_EXECUTION_PATH = "/change-manager/jobExecution/";
 
   private Vertx vertx;
   private UploadDefinitionService uploadDefinitionService;
@@ -36,6 +40,8 @@ public class FileServiceImpl implements FileService {
   public Future<UploadDefinition> uploadFile(String fileId, String uploadDefinitionId, InputStream data, OkapiConnectionParams params) {
     return uploadDefinitionService.updateBlocking(uploadDefinitionId, uploadDefinition -> {
       Future<UploadDefinition> future = Future.future();
+      // if new update status of jobExecution (parent, related to upload definition) to draft
+
       Optional<FileDefinition> optionalFileDefinition = uploadDefinition.getFileDefinitions().stream().filter(fileFilter -> fileFilter.getId().equals(fileId))
         .findFirst();
       if (optionalFileDefinition.isPresent()) {
@@ -49,6 +55,7 @@ public class FileServiceImpl implements FileService {
                 uploadDefinition.setStatus(uploadDefinition.getFileDefinitions().stream().allMatch(FileDefinition::getLoaded)
                   ? UploadDefinition.Status.LOADED
                   : UploadDefinition.Status.IN_PROGRESS);
+                // update status of jobExecution (child, related to file definition) to draft
                 future.complete(uploadDefinition);
               } else {
                 future.fail("Error during file save");
@@ -91,4 +98,6 @@ public class FileServiceImpl implements FileService {
     list.add(fileDefinition);
     return list;
   }
+
+
 }
