@@ -4,6 +4,7 @@ import io.vertx.core.Future;
 import io.vertx.core.Vertx;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
+import io.vertx.ext.sql.SQLConnection;
 import io.vertx.ext.sql.UpdateResult;
 import org.folio.rest.jaxrs.model.DefinitionCollection;
 import org.folio.rest.jaxrs.model.UploadDefinition;
@@ -15,6 +16,7 @@ import org.folio.rest.persist.PostgresClient;
 import org.folio.rest.persist.cql.CQLWrapper;
 import org.folio.rest.persist.interfaces.Results;
 import org.z3950.zing.cql.cql2pgjson.CQL2PgJSON;
+import org.z3950.zing.cql.cql2pgjson.FieldException;
 
 import javax.ws.rs.NotFoundException;
 import java.util.Optional;
@@ -48,88 +50,63 @@ public class UploadDefinitionDaoImpl implements UploadDefinitionDao {
   public Future<UploadDefinition> updateBlocking(String uploadDefinitionId, UploadDefinitionMutator mutator) {
     Future<UploadDefinition> future = Future.future();
     String rollbackMessage = "Rollback transaction. Error during upload definition update. uploadDefinitionId" + uploadDefinitionId;
-    pgClient.startTx(tx -> {
-      try {
-        StringBuilder selectUploadDefinitionQuery = new StringBuilder("SELECT jsonb FROM ")
+    Future<SQLConnection> tx = Future.future();
+    Future<UploadDefinition> uploadDefinitionFuture = Future.future();
+    Future.succeededFuture()
+    .compose(v -> {
+      pgClient.startTx(tx.completer());
+      return tx;
+    }).compose(v -> {
+      StringBuilder selectUploadDefinitionQuery = new StringBuilder("SELECT jsonb FROM ")
           .append(schema)
           .append(".")
           .append(UPLOAD_DEFINITION_TABLE)
           .append(" WHERE _id ='")
           .append(uploadDefinitionId).append("' LIMIT 1 FOR UPDATE;");
-        pgClient.execute(tx, selectUploadDefinitionQuery.toString(), selectResult -> {
-          if (selectResult.failed() || selectResult.result().getUpdated() != 1) {
-            pgClient.rollbackTx(tx, r -> {
-              logger.error(rollbackMessage, selectResult.cause());
-              future.fail(new NotFoundException(rollbackMessage));
-            });
-          } else {
-            Criteria idCrit = new Criteria();
-            idCrit.addField(UPLOAD_DEFINITION_ID_FIELD);
-            idCrit.setOperation("=");
-            idCrit.setValue(uploadDefinitionId);
-            pgClient.get(tx, UPLOAD_DEFINITION_TABLE, UploadDefinition.class, new Criterion(idCrit), false, true, uploadDefResult -> {
-              if (uploadDefResult.failed()
-                || uploadDefResult.result() == null
-                || uploadDefResult.result().getResultInfo() == null
-                || uploadDefResult.result().getResultInfo().getTotalRecords() < 1) {
-                pgClient.rollbackTx(tx, r -> {
-                  logger.error(rollbackMessage);
-                  future.fail(new NotFoundException(rollbackMessage));
-                });
-              } else {
-                try {
-                  UploadDefinition definition = uploadDefResult.result().getResults().get(0);
-                  mutator.mutate(definition)
-                    .setHandler(onMutate -> {
-                      if (onMutate.succeeded()) {
-                        try {
-                          CQLWrapper filter = new CQLWrapper(new CQL2PgJSON(UPLOAD_DEFINITION_TABLE + ".jsonb"), "id==" + definition.getId());
-                          pgClient.update(tx, UPLOAD_DEFINITION_TABLE, onMutate.result(), filter, true, updateHandler -> {
-                            if (updateHandler.succeeded() && updateHandler.result().getUpdated() == 1) {
-                              pgClient.endTx(tx, endTx -> {
-                                if (endTx.succeeded()) {
-                                  future.complete(definition);
-                                } else {
-                                  logger.error(rollbackMessage);
-                                  future.fail("Error during updating UploadDefinition with id: " + uploadDefinitionId);
-                                }
-                              });
-                            } else {
-                              pgClient.rollbackTx(tx, r -> {
-                                logger.error(rollbackMessage, updateHandler.cause());
-                                future.fail(updateHandler.cause());
-                              });
-                            }
-                          });
-                        } catch (Exception e) {
-                          pgClient.rollbackTx(tx, r -> {
-                            logger.error(rollbackMessage, e);
-                            future.fail(e);
-                          });
-                        }
-                      } else {
-                        pgClient.rollbackTx(tx, r -> {
-                          logger.error(rollbackMessage, onMutate.cause());
-                          future.fail(onMutate.cause());
-                        });
-                      }
-                    });
-                } catch (Exception e) {
-                  pgClient.rollbackTx(tx, r -> {
-                    logger.error(rollbackMessage, e);
-                    future.fail(e);
-                  });
-                }
-              }
-            });
-          }
-        });
-      } catch (Exception e) {
-        pgClient.rollbackTx(tx, r -> {
-          logger.error(rollbackMessage, e);
-          future.fail(e);
-        });
+      Future<UpdateResult> selectResult = Future.future();
+      pgClient.execute(tx, selectUploadDefinitionQuery.toString(), selectResult);
+      return selectResult;
+    }).compose(selectResult -> {
+      if (selectResult.getUpdated() != 1) {
+        throw new NotFoundException(rollbackMessage);
       }
+      Criteria idCrit = new Criteria();
+      idCrit.addField(UPLOAD_DEFINITION_ID_FIELD);
+      idCrit.setOperation("=");
+      idCrit.setValue(uploadDefinitionId);
+      Future<Results<UploadDefinition>> uploadDefResult = Future.future();
+      pgClient.get(tx, UPLOAD_DEFINITION_TABLE, UploadDefinition.class, new Criterion(idCrit), false, true, uploadDefResult);
+      return uploadDefResult;
+    }).compose(uploadDefResult -> {
+      if (uploadDefResult.getResults().size() != 1) {
+        throw new NotFoundException(rollbackMessage);
+      }
+      UploadDefinition definition = uploadDefResult.getResults().get(0);
+      mutator.mutate(definition).setHandler(uploadDefinitionFuture);
+      return uploadDefinitionFuture;
+    }).compose(definition -> {
+      CQLWrapper filter;
+      try {
+        filter = new CQLWrapper(new CQL2PgJSON(UPLOAD_DEFINITION_TABLE + ".jsonb"), "id==" + definition.getId());
+      } catch (FieldException e) {
+        throw new RuntimeException(e);
+      }
+      Future<UpdateResult> updateHandler = Future.future();
+      pgClient.update(tx, UPLOAD_DEFINITION_TABLE, definition, filter, true, updateHandler);
+      return updateHandler;
+    }).compose(updateHandler -> {
+      if (updateHandler.getUpdated() != 1) {
+        throw new NotFoundException(rollbackMessage);
+      }
+      Future<Void> endTxFuture = Future.future();
+      pgClient.endTx(tx, endTxFuture);
+      return endTxFuture;
+    }).setHandler(v -> {
+      if (v.failed()) {
+        pgClient.rollbackTx(tx, rollback -> future.fail(v.cause()));
+        return;
+      }
+      future.complete(uploadDefinitionFuture.result());
     });
     return future;
   }
